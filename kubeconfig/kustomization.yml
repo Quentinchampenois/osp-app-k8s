@@ -1,0 +1,136 @@
+resources:
+- .
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: decidim-k8s-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: decidim-k8s-config
+        labels:
+          app: decidim-k8s-app
+          sidekiq: decidim-k8s-sidekiq
+      data:
+        RAILS_ENV: "production"
+        RAILS_LOG_TO_STDOUT: "true"
+        RAILS_SERVE_STATIC_FILES: "true"
+        APP_NAME: "decidim-k8s-staging"
+        RACK_ATTACK_DISABLED: "true"
+        CACHE_ASSETS: "true"
+        SENTRY_TRACES_SAMPLE_RATE: "1"
+        NEW_RELIC_ENV: "staging"
+  - target:
+      kind: Deployment
+      name: decidim-k8s-sidekiq-deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: decidim-k8s-sidekiq-deployment
+      spec:
+        selector:
+          matchLabels:
+            sidekiq: decidim-k8s-sidekiq
+        template:
+          metadata:
+            labels:
+              sidekiq: decidim-k8s-sidekiq
+          spec:
+            terminationGracePeriodSeconds: 60
+            containers:
+              - name: decidim-k8s-sidekiq
+                image: rg.fr-par.scw.cloud/decidim/osp-decidim:latest
+                args: ["/usr/local/bundle/bin/bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+                ports:
+                  - containerPort: 3000
+                livenessProbe:
+                  exec:
+                    command: ["./sidekiq_alive.sh"]
+                  failureThreshold: 3
+                  periodSeconds: 10
+                startupProbe:
+                  exec:
+                    command: ["./sidekiq_alive.sh"]
+                  initialDelaySeconds: 120
+                  failureThreshold: 30
+                  periodSeconds: 10
+                lifecycle:
+                  preStop:
+                    exec:
+                      command: ["./sidekiq_quiet.sh"]
+                envFrom:
+                  - configMapRef:
+                      name: decidim-k8s-config
+                  - secretRef:
+                      name: decidim-k8s-app-secrets
+
+  - target:
+      kind: Ingress
+      name: osp-app-k8s-ing
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: osp-app-k8s-ing
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+      spec:
+        tls:
+          - hosts:
+              - ...
+            secretName: decidim-tls
+        rules:
+          - host: ...
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: decidim-k8s-app-load-balancer
+                      port:
+                        number: 80
+
+  - target:
+      kind: Deployment
+      name: decidim-k8s-app-deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: decidim-k8s-app-deployment
+      spec:
+        selector:
+          matchLabels:
+            app: decidim-k8s-app
+        template:
+          metadata:
+            labels:
+              app: decidim-k8s-app
+          spec:
+            containers:
+              - name: decidim-k8s-app
+                image: rg.fr-par.scw.cloud/decidim/osp-decidim:latest
+                args: ["/usr/local/bundle/bin/bundle", "exec", "puma", "-C", "config/puma.rb"]
+                ports:
+                  - containerPort: 3000
+                livenessProbe:
+                  exec:
+                    command: ["./puma_alive.sh"]
+                  failureThreshold: 3
+                  periodSeconds: 10
+                startupProbe:
+                  exec:
+                    command: ["./puma_alive.sh"]
+                  initialDelaySeconds: 30
+                  failureThreshold: 60
+                  periodSeconds: 10
+                envFrom:
+                  - configMapRef:
+                      name: decidim-k8s-config
+                  - secretRef:
+                      name: decidim-k8s-app-secrets
+
